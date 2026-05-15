@@ -1,0 +1,18 @@
+# log files
+*.log
+
+# python venv
+.venv
+__pycache__/
+*.pyc
+
+# PixivCollection local archive data
+pixiv_collection/backups/
+pixiv_collection/image/
+pixiv_collection/logs/
+pixiv_collection/collection.json
+pixiv_collection/images.json
+pixiv_collection/restore_manifest.json
+pixiv_collection/archive_report.json
+pixiv_collection/upload_report.json
+pixiv_collection/pipeline.local.env
