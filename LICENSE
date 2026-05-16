@@ -1,5 +1,9 @@
 MIT License
 
+Original pixiv_collection crawler scripts:
+Copyright (c) 2023 OriLight
+
+Pipeline, Cloudflare R2 publishing workflow, documentation, and modifications:
 Copyright (c) 2026 AgIzT
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

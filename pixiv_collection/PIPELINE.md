@@ -1,6 +1,6 @@
 # PixivCollection 日常爬取上传闭环
 
-目标不是每天从 R2 拉数据，而是把本地恢复出来的归档当作主库继续维护：
+目标不是每天从 R2 拉数据，而是把本地归档当作主库持续维护。第一次运行可以从空归档开始；如果已经有旧的 `collection.json`、`images.json` 和 `image/`，也可以直接接着增量维护：
 
 ```text
 本地旧归档
@@ -18,13 +18,13 @@
 工作目录：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\pixiv_collection
+PixivCollection-Pipeline\pixiv_collection
 ```
 
 Python 环境：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe
+PixivCollection-Pipeline\.venv\Scripts\python.exe
 ```
 
 核心本地数据：
@@ -67,16 +67,37 @@ Pixiv API 没有下一页时爬虫自己会停，所以 `9999` 基本等同全�
 如果只是测试，可以临时限制页数：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root . --public-pages 2 --private-pages 2 --skip-upload
+..\.venv\Scripts\python.exe pipeline.py --root . --public-pages 2 --private-pages 2 --skip-upload
 ```
 
-## 第一次配置环境变量
+## 第一次配置
 
 打开 PowerShell：
 
 ```powershell
-cd D:\program\PixivCollection-Pipeline\pixiv_collection
+cd PixivCollection-Pipeline\pixiv_collection
 ```
+
+推荐复制模板到本地私有配置文件：
+
+```powershell
+Copy-Item .\pipeline.example.env .\pipeline.local.env
+notepad .\pipeline.local.env
+```
+
+填入：
+
+```text
+PIXIV_USER_ID=你的 Pixiv 用户 ID
+PIXIV_REFRESH_TOKEN=你的 Pixiv refresh token
+CLOUDFLARE_ACCOUNT_ID=你的 Cloudflare Account ID
+R2_BUCKET=pixiv-images
+R2_ENDPOINT_URL=https://你的 Cloudflare Account ID.r2.cloudflarestorage.com
+AWS_ACCESS_KEY_ID=你的 R2 S3 Access Key ID
+AWS_SECRET_ACCESS_KEY=你的 R2 S3 Secret Access Key
+```
+
+也可以不用文件，直接在当前 PowerShell 窗口设置环境变量。
 
 Pixiv：
 
@@ -95,14 +116,14 @@ $env:AWS_ACCESS_KEY_ID="你的 R2 S3 Access Key ID"
 $env:AWS_SECRET_ACCESS_KEY="你的 R2 S3 Secret Access Key"
 ```
 
-这些环境变量只对当前 PowerShell 窗口有效。新开窗口需要重新设置，或者你自己写成本机私有启动脚本。
+环境变量只对当前 PowerShell 窗口有效。`pipeline.local.env` 会被脚本自动读取，更适合日常使用。这个文件已经被 `.gitignore` 忽略，不要提交。
 
 ## 日常完整运行
 
 默认扫公开收藏和私密收藏最多 9999 页，实际到没有下一页就会停止，然后上传 R2：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root .
+..\.venv\Scripts\python.exe pipeline.py --root .
 ```
 
 完整流程会做：
@@ -127,31 +148,31 @@ D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root 
 只校验本地，不爬取、不上传：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root . --validate-only
+..\.venv\Scripts\python.exe pipeline.py --root . --validate-only
 ```
 
 只爬取和更新本地，不上传：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root . --skip-upload
+..\.venv\Scripts\python.exe pipeline.py --root . --skip-upload
 ```
 
 只上传当前本地结果，不访问 Pixiv：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root . --skip-crawl
+..\.venv\Scripts\python.exe pipeline.py --root . --skip-crawl
 ```
 
 只看上传计划，不实际上传：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root . --skip-crawl --dry-run-upload
+..\.venv\Scripts\python.exe pipeline.py --root . --skip-crawl --dry-run-upload
 ```
 
 临时只扫前几页：
 
 ```powershell
-D:\program\PixivCollection-Pipeline\.venv\Scripts\python.exe pipeline.py --root . --public-pages 5 --private-pages 5
+..\.venv\Scripts\python.exe pipeline.py --root . --public-pages 5 --private-pages 5
 ```
 
 ## 上传策略
