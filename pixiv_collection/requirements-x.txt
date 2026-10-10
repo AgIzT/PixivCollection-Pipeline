@@ -1,0 +1,3 @@
+# Optional external downloader, verified against the official fixed release.
+# Not installed or invoked by the offline test suite.
+gallery-dl==1.32.16

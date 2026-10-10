@@ -1,0 +1,5 @@
+[
+  [2, {"tweet_id": 1999000000000000001, "count": 2, "date": "2020-01-01 12:00:00", "date_bookmarked": "2026-10-10 08:00:00", "author": {"id": 10001, "name": "FixtureAuthor", "nick": "Synthetic author"}, "content": "Synthetic two-image bookmark", "hashtags": ["fixture"]}],
+  [3, "https://pbs.twimg.com/media/fixture_one?format=png&name=orig", {"tweet_id": 1999000000000000001, "count": 2, "num": 1, "extension": "png", "date": "2020-01-01 12:00:00", "date_bookmarked": "2026-10-10 08:00:00", "author": {"id": 10001, "name": "FixtureAuthor", "nick": "Synthetic author"}, "content": "Synthetic two-image bookmark", "hashtags": ["fixture"]}],
+  [3, "https://pbs.twimg.com/media/fixture_two?format=png&name=orig", {"tweet_id": 1999000000000000001, "count": 2, "num": 2, "extension": "png", "date": "2020-01-01 12:00:00", "date_bookmarked": "2026-10-10 08:00:00", "author": {"id": 10001, "name": "FixtureAuthor", "nick": "Synthetic author"}, "content": "Synthetic two-image bookmark", "hashtags": ["fixture"]}]
+]

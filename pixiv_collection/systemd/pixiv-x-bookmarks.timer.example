@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily X bookmark image backup example (not enabled)
+
+[Timer]
+# Example UTC time, separated from the existing 08:13 Pixiv timer.
+OnCalendar=*-*-* 09:30:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+Unit=pixiv-x-bookmarks.service
+
+[Install]
+WantedBy=timers.target

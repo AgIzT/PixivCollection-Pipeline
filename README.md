@@ -170,6 +170,9 @@ image/thumbnail/*
 
 ## 详细文档
 
+隔离实现的 X 书签每日防删备份见 [X_BOOKMARKS.md](pixiv_collection/X_BOOKMARKS.md)。
+目前只有本地代码和离线测试，没有账号会话、服务器部署或已启用的 X 定时任务。
+
 完整运行说明见：
 
 [pixiv_collection/PIPELINE.md](pixiv_collection/PIPELINE.md)

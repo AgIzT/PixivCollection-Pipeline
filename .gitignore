@@ -25,3 +25,6 @@ pixiv_collection/pipeline.local.env
 pixiv_collection/pending/
 pixiv_collection/ingest_report.json
 pixiv_collection/.pipeline.lock
+pixiv_collection/.x-sync/
+*.local.json
+*cookies*.txt

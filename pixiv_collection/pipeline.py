@@ -304,7 +304,7 @@ def run_ingest(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     """
 
     from collection import PixivCollection
-    from ingest import merge_pending
+    from ingest import commit_pending, merge_pending
 
     pending = root / "pending"
     if not pending.is_dir() or not any(pending.glob("*.json")):
@@ -342,9 +342,10 @@ def run_ingest(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 
     report = merge_pending(root, paths, collection)
 
-    if report["merged"]:
+    if report["merged"] or report["duplicate"]:
         client.save_data(str(collection_path))
         client.export(str(root / "images.json"))
+        commit_pending(root, report)
     else:
         print("Nothing merged; collection.json left untouched.")
 
@@ -756,6 +757,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-crawl", action="store_true")
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--ingest-only", action="store_true")
+    parser.add_argument("--publication-id", default="", help="Receipt identifier for a serialized sync run")
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--dry-run-upload", action="store_true")
@@ -798,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.skip_upload:
         upload_report = upload_to_r2(args, root)
+        upload_report['publication_id'] = args.publication_id
         write_upload_report(root, upload_report)
     else:
         print("Upload skipped.")

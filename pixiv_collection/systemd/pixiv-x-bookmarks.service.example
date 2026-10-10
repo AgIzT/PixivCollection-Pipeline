@@ -1,0 +1,14 @@
+[Unit]
+Description=Additive daily X bookmark image backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pixiv_collection
+Environment=PYTHONUNBUFFERED=1
+# x_bookmarks holds .pipeline.lock internally, including its pipeline child.
+# Explicit user-prepared account config is required; no browser extraction.
+ExecStart=/opt/pixiv_collection/.venv/bin/python /opt/pixiv_collection/x_bookmarks.py --root /opt/pixiv_collection --live --gallery-config /opt/pixiv_collection/gallery-dl.local.json --publish
+TimeoutStartSec=4h
+UMask=0077

@@ -29,6 +29,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -302,7 +303,6 @@ def merge_pending(root: Path, paths: dict[str, str],
         print(f"警告：磁盘剩余 {disk['free_gib']}GiB，接近阈值", file=sys.stderr)
 
     ensure_registry(collection)
-    consumed = pending / "consumed"
     failed = pending / "failed"
 
     for manifest_path in sorted(pending.glob("*.json")):
@@ -316,7 +316,8 @@ def merge_pending(root: Path, paths: dict[str, str],
             reason = validate_manifest(manifest)
             if reason:
                 raise ValueError(reason)
-            if not item_dir.is_dir():
+            key = f"{manifest['source']}:{str(manifest['source_id']).strip()}"
+            if not item_dir.is_dir() and key not in collection["sources"]:
                 raise FileNotFoundError(f"缺少原图目录 {item_dir.name}/")
 
             result = merge_item(collection, paths, manifest, item_dir)
@@ -327,13 +328,8 @@ def merge_pending(root: Path, paths: dict[str, str],
             else:
                 report["merged"] += 1
 
-            consumed.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(manifest_path), str(consumed / manifest_path.name))
-            if item_dir.is_dir():
-                target = consumed / item
-                if target.exists():
-                    shutil.rmtree(target)
-                shutil.move(str(item_dir), str(target))
+            # Keep the queue until BOTH archive JSON files have been committed.
+            # Retry sees a duplicate if collection.json committed before a crash.
         except Exception as exc:  # 单项失败不影响其余
             report["failed"] += 1
             entry.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
@@ -352,3 +348,41 @@ def merge_pending(root: Path, paths: dict[str, str],
         report["items"].append(entry)
 
     return report
+
+
+def commit_pending(root: Path, report: dict[str, Any]) -> None:
+    """Acknowledge only items present in both durable metadata files.
+
+    Move originals first and the manifest last. On interruption the registry
+    allows retry even when the queue's image directory has already moved.
+    Existing consumed material is preserved under a unique name, never deleted.
+    """
+    collection = json.loads((root / 'collection.json').read_text('utf-8'))
+    exported = json.loads((root / 'images.json').read_text('utf-8'))
+    exported_parts = {}
+    for image in exported:
+        exported_parts.setdefault(int(image['id']), set()).add(int(image['part']))
+    pending = root / 'pending'
+    consumed = pending / 'consumed'
+    for entry in report['items']:
+        if entry.get('status') not in ('merged', 'duplicate'):
+            continue
+        image_id = entry['image_id']
+        item = entry['item']
+        manifest = pending / (item + '.json')
+        expected = len(json.loads(manifest.read_text('utf-8'))['files'])
+        if (collection.get('sources', {}).get(entry['key']) != image_id
+                or exported_parts.get(image_id) != set(range(expected))):
+            raise RuntimeError('Pending item has not been durably exported')
+        consumed.mkdir(parents=True, exist_ok=True)
+        item_dir = pending / item
+        if item_dir.is_dir():
+            destination = consumed / item
+            if destination.exists():
+                destination = consumed / (item + '.' + uuid.uuid4().hex)
+            item_dir.rename(destination)
+        if manifest.exists():
+            destination = consumed / manifest.name
+            if destination.exists():
+                destination = consumed / (item + '.' + uuid.uuid4().hex + '.json')
+            manifest.rename(destination)
