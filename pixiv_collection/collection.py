@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import re
+from datetime import datetime
 from io import StringIO
 
 from loguru import logger
@@ -43,11 +44,37 @@ def normalize_filename(filename):
     return filename
 
 
+def author_public(data):
+    '''导出给前端的作者字段, 只保留 Image['author'] 约定的三个键'''
+
+    return {
+        'id': data['id'],
+        'name': data['name'],
+        'account': data['account'],
+    }
+
+
+def sort_timestamp(value):
+    '''把 ISO8601 发布时间解析成可比较的秒数, 解析失败按最早处理'''
+
+    try:
+        return datetime.fromisoformat(str(value).replace('Z',
+                                                         '+00:00')).timestamp()
+    except Exception:
+        return 0.0
+
+
 class PixivCollection():
 
     def __init__(self):
         logger.remove(handler_id=None)
-        logger.add(sys.stdout, level='INFO', format=LOG_FORMAT)
+        logger.add(
+            sys.stdout,
+            level='INFO',
+            format=LOG_FORMAT,
+            backtrace=False,
+            diagnose=False,
+        )
         self.__api = None
         self.__cache = {}
         self.__path = {
@@ -59,6 +86,10 @@ class PixivCollection():
         self.images = {}
         self.tags = {}
         self.files = {}
+        # 多来源入库: sources 是 "{source}:{source_id}" -> 内部 id 的幂等注册表,
+        # counters 保存合成 id 游标。详见 ingest.py
+        self.sources = {}
+        self.counters = {}
 
     def __list_files(self, path):
         files = os.listdir(path)
@@ -289,9 +320,15 @@ class PixivCollection():
 
     def add_logger(self, target, level='INFO'):
         if isinstance(target, str):
-            logger.add(target, level=level, encoding='utf-8')
+            logger.add(
+                target,
+                level=level,
+                encoding='utf-8',
+                backtrace=False,
+                diagnose=False,
+            )
         if isinstance(target, StringIO):
-            logger.add(target, level=level)
+            logger.add(target, level=level, backtrace=False, diagnose=False)
 
     def set_path(self, path: dict):
         '''设置图片存储路径'''
@@ -308,7 +345,8 @@ class PixivCollection():
 
         try:
             api = AppPixivAPI()
-            logger.debug(api.auth(refresh_token=refresh_token))
+            api.auth(refresh_token=refresh_token)
+            logger.debug('PixivAPI认证完成')
             api.set_accept_language('zh-cn')
             logger.info('PixivAPI初始化成功')
             self.__api = api
@@ -329,6 +367,9 @@ class PixivCollection():
             self.images = data['images']
             self.tags = data['tags']
             self.files = data['files']
+            # 旧档案没有这两个键, 缺省即可
+            self.sources = data.get('sources', {})
+            self.counters = data.get('counters', {})
 
         logger.info(
             f'读取数据成功, 文件:{len(self.files)} 图片:{len(self.images)} 作者:{len(self.authors)} 标签:{len(self.tags)}'
@@ -352,6 +393,8 @@ class PixivCollection():
                     'images': self.images,
                     'tags': self.tags,
                     'files': self.files,
+                    'sources': self.sources,
+                    'counters': self.counters,
                 },
                 f,
                 indent=4,
@@ -687,7 +730,7 @@ class PixivCollection():
                 'ext':
                 self.files[file]['data']['ext'],
                 'author':
-                self.authors[author_id]['data'],
+                author_public(self.authors[author_id]['data']),
                 'tags': [
                     self.tags[tag]['data']
                     for tag in self.images[image_id]['data']['tags']
@@ -705,10 +748,24 @@ class PixivCollection():
                 'dominant_color':
                 self.files[file]['data']['dominant_color'],
             }
+
+            # 多来源字段。source 恒定输出, 前端据此判断跳转目标与角标;
+            # 其余字段仅在存在时输出, 避免给存量 Pixiv 数据平添体积
+            image_data = self.images[image_id]['data']
+            image['source'] = image_data.get('source', 'pixiv')
+            for key in ('source_url', 'collected_at'):
+                if image_data.get(key):
+                    image[key] = image_data[key]
+            author_url = self.authors[author_id]['data'].get('url')
+            if author_url:
+                image['author_url'] = author_url
+
             result.append(image)
 
-        result.sort(key=lambda x: x['id'] * 1000 + 999 - x['part'],
-                    reverse=True)
+        # 按发布时间倒序。原先按 id 倒序, 在只有 Pixiv 时等价于时间序,
+        # 但合成 id 恒大于 Pixiv id, 沿用会让新来源永久占据首屏
+        result.sort(key=lambda x:
+                    (-sort_timestamp(x['created_at']), -x['id'], x['part']))
         logger.info(f'导出{len(result)}条数据至 {file_path}')
 
         with open(file_path, 'w', encoding='utf-8') as f:

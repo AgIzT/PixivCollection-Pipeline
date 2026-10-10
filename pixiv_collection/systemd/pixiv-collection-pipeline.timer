@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily PixivCollection pipeline timer
+
+[Timer]
+OnCalendar=*-*-* 08:13:00
+RandomizedDelaySec=10min
+AccuracySec=1min
+Persistent=true
+Unit=pixiv-collection-pipeline.service
+
+[Install]
+WantedBy=timers.target

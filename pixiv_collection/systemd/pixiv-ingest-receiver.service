@@ -1,0 +1,36 @@
+[Unit]
+Description=PixivCollection ingest receiver (pending queue intake)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pixivingest
+Group=pixivingest
+WorkingDirectory=/opt/pixiv_collection
+EnvironmentFile=/opt/pixiv_collection/ingest.local.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/pixiv_collection/.venv/bin/python /opt/pixiv_collection/receiver.py \
+    --root /opt/pixiv_collection --host 127.0.0.1 --port 8788
+Restart=always
+RestartSec=5
+
+# 这是公网可达（经 Cloudflare Tunnel）的服务，按最小权限收紧：
+# 整个文件系统只读，唯一可写的是 pending 队列目录
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/opt/pixiv_collection/pending
+
+[Install]
+WantedBy=multi-user.target

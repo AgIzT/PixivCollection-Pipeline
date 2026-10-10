@@ -20,8 +20,12 @@ Pixiv 收藏夹
 - 只下载本地缺失的原图
 - 自动生成展示站需要的 `preview` 和 `thumbnail`
 - 上传 R2 前会校验本地归档完整性
-- R2 上传采用批量列对象后本地比对，只上传缺失或大小变化的文件
+- R2 图片上传采用批量列对象后本地比对，只上传缺失或大小变化的图片
 - 默认不删除 R2 上本地没有的对象，避免误删历史归档
+- 支持 X、B站等来源通过接收器投递到 `pending/`，与 Pixiv 归档合并后统一上传
+- 多来源使用幂等注册表和合成 ID，保留来源链接并按发布时间导出
+- 元数据 JSON 每次上传刷新；图片按大小增量上传，并设置不同的缓存策略
+- 提供每日采集任务和本地接收器的 systemd 配置示例
 
 ## 需要准备
 
@@ -51,8 +55,13 @@ image/thumbnail/*
 pixiv_collection/
 ├── collection.py      # PixivCollection 爬虫核心
 ├── pipeline.py        # 爬取、校验、上传 R2 的闭环入口
+├── ingest.py          # 合并多来源 pending 队列
+├── ingest_schema.py   # 清单校验与磁盘水位约定
+├── receiver.py        # 标准库 HTTP 接收器
+├── systemd/           # 采集任务、定时器与接收器服务示例
 ├── PIPELINE.md        # 详细运行说明
 ├── pipeline.example.env
+├── ingest.example.env
 ├── requirements.txt   # Python 依赖
 ├── colorthief.py
 └── example.py
@@ -67,6 +76,9 @@ pixiv_collection/image/
 pixiv_collection/logs/
 pixiv_collection/backups/
 pixiv_collection/pipeline.local.env
+pixiv_collection/ingest.local.env
+pixiv_collection/pending/
+pixiv_collection/ingest_report.json
 ```
 
 ## 快速开始
@@ -115,7 +127,7 @@ AWS_SECRET_ACCESS_KEY=你的 R2 S3 Secret Access Key
 .\.venv\Scripts\python.exe .\pixiv_collection\pipeline.py --root .\pixiv_collection --validate-only
 ```
 
-只上传当前本地结果到 R2：
+跳过 Pixiv 爬取，合并 pending 后上传本地结果到 R2（仅上传现有归档需另加 `--skip-ingest`）：
 
 ```powershell
 .\.venv\Scripts\python.exe .\pixiv_collection\pipeline.py --root .\pixiv_collection --skip-crawl
@@ -140,6 +152,21 @@ image/thumbnail/*
 ```
 
 展示站主要读取 `images.json` 与 `image/*`。`collection.json` 也会上传保存，用来支撑以后继续增量爬取。
+
+## 多来源接收器
+
+`receiver.py` 使用标准库，默认仅监听 `127.0.0.1:8788`，需要通过已有反向代理或 Tunnel 提供公网入口。
+将 `ingest.example.env` 复制为私有的 `ingest.local.env`，把 `INGEST_TOKEN` 替换为自行生成的强随机值。
+使用 systemd 示例时，凭据通过 `EnvironmentFile` 加载；直接启动时需要先将该变量载入进程环境。
+生产接收器必须设置该变量：当前源码在没有 token 时仅告警，接口会没有鉴权。
+
+接口包括无需鉴权的 `GET /health`，以及需要 Bearer 鉴权的 `POST /ingest` 和 `GET /exists`。
+接收器将图片和清单写入 `pending/`；每日 pipeline 会合并队列，也可通过 `--ingest-only` 单独合并后校验并上传。
+`--skip-ingest` 可跳过队列合并。`--skip-crawl` 仍会合并队列，只有同时添加 `--skip-ingest` 才会仅处理现有归档。
+
+`systemd/` 是配置示例，默认运行目录为 `/opt/pixiv_collection`，接收器用户为 `pixivingest`。
+安装前需准备该目录、虚拟环境、私有配置、服务用户及适当的队列读写权限。
+同步这个仓库不会自动安装 unit、重启服务或触发采集上传。
 
 ## 详细文档
 

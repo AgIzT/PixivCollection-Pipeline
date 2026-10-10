@@ -1,0 +1,13 @@
+[Unit]
+Description=Run PixivCollection pipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pixiv_collection
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/flock -n /opt/pixiv_collection/.pipeline.lock /opt/pixiv_collection/.venv/bin/python /opt/pixiv_collection/pipeline.py --root /opt/pixiv_collection
+TimeoutStartSec=2h
+Restart=on-failure
+RestartSec=15min

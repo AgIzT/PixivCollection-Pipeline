@@ -6,12 +6,56 @@
 
 1. 爬取图片（推荐使用 [Powerful Pixiv Downloader](https://github.com/xuejianxianzun/PixivBatchDownloader) 浏览器拓展）并按照 `[pid]_p[part].[ext]` 命名，放置于 `image/original` 目录下
    1. 如图片较少可跳过此步，直接使用本脚本爬取图片
-2. 下载或克隆本项目，安装 Python （开发环境为 Python 3.11）与相关依赖（pip install -r requirements.txt）
+2. 下载或克隆本项目，安装 Python （开发环境为 Python 3.11；本目录已在 Ubuntu 22.04 / Python 3.10 下验证）与相关依赖（pip install -r requirements.txt）
 3. 获取 Pixiv 账号的 refresh token，具体步骤请参照 [Pixiv OAuth Flow](https://gist.github.com/ZipFile/c9ebedb224406f4f11845ab700124362) 或 [Pixiv OAuth Flow (with Selenium)](https://gist.github.com/upbit/6edda27cb1644e94183291109b8a5fde)
 4. 将 `USER_ID` 和 `REFRESH_TOKEN` 填入 `example.py` 的对应位置
 5. 执行 `python example.py`
 
-脚本默认会进行以下操作：
+## Linux 快速启动
+
+本机当前工作目录：
+
+```bash
+cd /opt/pixiv_collection
+```
+
+已创建本地虚拟环境：
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+`pipeline.py` 会自动读取当前目录的 `pipeline.local.env`。该文件保存 Pixiv 与 R2 密钥，建议只允许当前用户读取：
+
+```bash
+chmod 600 pipeline.local.env
+```
+
+只做本地归档校验：
+
+```bash
+.venv/bin/python pipeline.py --root . --validate-only
+```
+
+爬取并更新本地，但不上传 R2：
+
+```bash
+.venv/bin/python pipeline.py --root . --skip-upload
+```
+
+不访问 Pixiv，合并 pending 后检查归档并试算 R2 上传计划：
+
+```bash
+.venv/bin/python pipeline.py --root . --skip-crawl --dry-run-upload
+```
+
+完整运行并上传：
+
+```bash
+.venv/bin/python pipeline.py --root .
+```
+
+原有 `example.py` 示例默认会进行以下操作（完整 pipeline 的扫描范围见 `PIPELINE.md`）：
 
 1. 检查 refresh token 是否可用
 2. 读取 `collection.json` 中的数据

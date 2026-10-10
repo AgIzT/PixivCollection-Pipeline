@@ -15,16 +15,28 @@
 
 ## 目录
 
-工作目录：
+Windows 工作目录：
 
 ```powershell
 PixivCollection-Pipeline\pixiv_collection
 ```
 
-Python 环境：
+Windows Python 环境：
 
 ```powershell
-PixivCollection-Pipeline\.venv\Scripts\python.exe
+..\.venv\Scripts\python.exe
+```
+
+Linux 工作目录：
+
+```bash
+/opt/pixiv_collection
+```
+
+Linux Python 环境：
+
+```bash
+/opt/pixiv_collection/.venv/bin/python
 ```
 
 核心本地数据：
@@ -32,11 +44,11 @@ PixivCollection-Pipeline\.venv\Scripts\python.exe
 ```text
 collection.json        爬虫内部状态，必须长期保留
 images.json            展示站读取的数据
-image\original\        原图归档
-image\preview\         预览图，webp
-image\thumbnail\       缩略图，webp
-logs\                  运行日志
-backups\               每次写 collection/images 前的备份
+image/original/        原图归档
+image/preview/         预览图，webp
+image/thumbnail/       缩略图，webp
+logs/                  运行日志
+backups/               每次写 collection/images 前的备份
 archive_report.json    最近一次本地校验报告
 upload_report.json     最近一次 R2 上传报告
 ```
@@ -70,34 +82,28 @@ Pixiv API 没有下一页时爬虫自己会停，所以 `9999` 基本等同全�
 ..\.venv\Scripts\python.exe pipeline.py --root . --public-pages 2 --private-pages 2 --skip-upload
 ```
 
-## 第一次配置
+Linux：
 
-打开 PowerShell：
+```bash
+.venv/bin/python pipeline.py --root . --public-pages 2 --private-pages 2 --skip-upload
+```
+
+## 第一次配置环境变量
+
+推荐在 `pixiv_collection` 目录复制模板到私有配置文件：
+
+```powershell
+Copy-Item .\pipeline.example.env .\pipeline.local.env
+```
+
+填入 Pixiv 与 R2 凭据后，`pipeline.py` 会自动读取该文件；它已被 `.gitignore` 忽略。
+也可以直接在当前进程中设置环境变量，以下均为需要替换的占位示例。
+
+Windows 打开 PowerShell：
 
 ```powershell
 cd PixivCollection-Pipeline\pixiv_collection
 ```
-
-推荐复制模板到本地私有配置文件：
-
-```powershell
-Copy-Item .\pipeline.example.env .\pipeline.local.env
-notepad .\pipeline.local.env
-```
-
-填入：
-
-```text
-PIXIV_USER_ID=你的 Pixiv 用户 ID
-PIXIV_REFRESH_TOKEN=你的 Pixiv refresh token
-CLOUDFLARE_ACCOUNT_ID=你的 Cloudflare Account ID
-R2_BUCKET=pixiv-images
-R2_ENDPOINT_URL=https://你的 Cloudflare Account ID.r2.cloudflarestorage.com
-AWS_ACCESS_KEY_ID=你的 R2 S3 Access Key ID
-AWS_SECRET_ACCESS_KEY=你的 R2 S3 Secret Access Key
-```
-
-也可以不用文件，直接在当前 PowerShell 窗口设置环境变量。
 
 Pixiv：
 
@@ -116,7 +122,15 @@ $env:AWS_ACCESS_KEY_ID="你的 R2 S3 Access Key ID"
 $env:AWS_SECRET_ACCESS_KEY="你的 R2 S3 Secret Access Key"
 ```
 
-环境变量只对当前 PowerShell 窗口有效。`pipeline.local.env` 会被脚本自动读取，更适合日常使用。这个文件已经被 `.gitignore` 忽略，不要提交。
+这些环境变量只对当前 PowerShell 窗口有效。新开窗口需要重新设置，或者你自己写成本机私有启动脚本。
+
+Linux 可以在 shell 中临时导出变量，也可以使用本目录的私有环境文件 `pipeline.local.env`。`pipeline.py` 会自动读取它：
+
+```bash
+cd /opt/pixiv_collection
+chmod 600 pipeline.local.env
+.venv/bin/python pipeline.py --root . --validate-only
+```
 
 ## 日常完整运行
 
@@ -124,6 +138,56 @@ $env:AWS_SECRET_ACCESS_KEY="你的 R2 S3 Secret Access Key"
 
 ```powershell
 ..\.venv\Scripts\python.exe pipeline.py --root .
+```
+
+Linux：
+
+```bash
+.venv/bin/python pipeline.py --root .
+```
+
+## Linux 自动任务
+
+本机已使用 systemd timer 设置每日自动运行。unit 文件在项目内保留一份：
+
+```text
+systemd/pixiv-collection-pipeline.service
+systemd/pixiv-collection-pipeline.timer
+```
+
+已安装到：
+
+```text
+/etc/systemd/system/pixiv-collection-pipeline.service
+/etc/systemd/system/pixiv-collection-pipeline.timer
+```
+
+当前计划为服务器本地时间每天 08:13 触发，并允许最多 10 分钟随机延迟：
+
+```ini
+OnCalendar=*-*-* 08:13:00
+RandomizedDelaySec=10min
+```
+
+查看下次运行时间：
+
+```bash
+systemctl status pixiv-collection-pipeline.timer --no-pager
+```
+
+手动立即运行一次完整流程：
+
+```bash
+systemctl start pixiv-collection-pipeline.service
+```
+
+修改 `systemd/` 下的 unit 文件后，重新安装并加载：
+
+```bash
+install -m 0644 systemd/pixiv-collection-pipeline.service /etc/systemd/system/pixiv-collection-pipeline.service
+install -m 0644 systemd/pixiv-collection-pipeline.timer /etc/systemd/system/pixiv-collection-pipeline.timer
+systemctl daemon-reload
+systemctl enable --now pixiv-collection-pipeline.timer
 ```
 
 完整流程会做：
@@ -151,16 +215,28 @@ $env:AWS_SECRET_ACCESS_KEY="你的 R2 S3 Secret Access Key"
 ..\.venv\Scripts\python.exe pipeline.py --root . --validate-only
 ```
 
+```bash
+.venv/bin/python pipeline.py --root . --validate-only
+```
+
 只爬取和更新本地，不上传：
 
 ```powershell
 ..\.venv\Scripts\python.exe pipeline.py --root . --skip-upload
 ```
 
-只上传当前本地结果，不访问 Pixiv：
+```bash
+.venv/bin/python pipeline.py --root . --skip-upload
+```
+
+不访问 Pixiv，先合并 pending，再上传本地结果（只上传现有归档需另加 `--skip-ingest`）：
 
 ```powershell
 ..\.venv\Scripts\python.exe pipeline.py --root . --skip-crawl
+```
+
+```bash
+.venv/bin/python pipeline.py --root . --skip-crawl
 ```
 
 只看上传计划，不实际上传：
@@ -169,10 +245,18 @@ $env:AWS_SECRET_ACCESS_KEY="你的 R2 S3 Secret Access Key"
 ..\.venv\Scripts\python.exe pipeline.py --root . --skip-crawl --dry-run-upload
 ```
 
+```bash
+.venv/bin/python pipeline.py --root . --skip-crawl --dry-run-upload
+```
+
 临时只扫前几页：
 
 ```powershell
 ..\.venv\Scripts\python.exe pipeline.py --root . --public-pages 5 --private-pages 5
+```
+
+```bash
+.venv/bin/python pipeline.py --root . --public-pages 5 --private-pages 5
 ```
 
 ## 上传策略
@@ -182,11 +266,15 @@ $env:AWS_SECRET_ACCESS_KEY="你的 R2 S3 Secret Access Key"
 ```text
 本地有，R2 没有              上传
 本地和 R2 同名但大小不同     上传覆盖
-本地和 R2 同名且大小相同     跳过
+图片与 R2 同名且大小相同     跳过
+collection/images.json     每次重传，刷新元数据及响应头
 R2 有，本地没有              保留远端，不删除
 ```
 
 不默认删除远端对象，是为了避免误删历史图。
+
+元数据 JSON 使用 `Cache-Control: no-cache`，图片使用一年长缓存和 `immutable`。
+JSON 即使大小没有变化也会重传，避免内容或缓存响应头更新被按大小跳过。
 
 ## 重复异常文件处理
 
@@ -210,9 +298,83 @@ problems: none
 ```text
 archive_report.json    本地数据是否完整
 upload_report.json     R2 上传了什么、跳过了什么、是否有错误
-logs\pipeline_*.log    爬虫详细日志
-backups\时间戳\        运行前的 collection/images 备份
+logs/pipeline_*.log    爬虫详细日志
+backups/时间戳/        运行前的 collection/images 备份
 ```
+
+## 多来源入库（X / B站等）
+
+Pixiv 之外的来源不走爬虫，由外部（油猴脚本 → 接收端）投递到 `pending/` 队列，
+pipeline 在 **crawl 之后、validate 之前**合并进本地归档，之后复用既有的校验与
+R2 增量上传，不新开上传通道。
+
+### pending 布局
+
+```text
+pending/<item>.json        入库清单
+pending/<item>/<n>.<ext>   清单里引用的原图
+pending/consumed/<item>/   合并成功后归档至此
+pending/failed/<item>/     合并失败移到此处，保留现场供排查
+```
+
+清单字段（`source_id` 必填，是幂等的唯一键）：
+
+```json
+{
+  "source": "bilibili",
+  "source_id": "1029384756102938475",
+  "source_url": "https://t.bilibili.com/1029384756102938475",
+  "title": "作品标题",
+  "caption": "动态正文全文",
+  "tags": ["标签1", "标签2"],
+  "created_at": "2026-08-05T10:00:00+08:00",
+  "collected_at": "2026-08-05T11:00:00+08:00",
+  "x_restrict": 0,
+  "bookmark": 42,
+  "author": {
+    "source_uid": "12345",
+    "name": "作者名",
+    "account": "handle",
+    "url": "https://space.bilibili.com/12345"
+  },
+  "files": [
+    { "file": "0.png", "origin_url": "https://i0.hdslb.com/bfs/new_dyn/a.png" }
+  ]
+}
+```
+
+### 为什么不直接用平台原始 id
+
+X 的 tweet id 与 B 站动态 id 都是 snowflake，量级约 `1.9e18`，超过 JavaScript
+`Number.MAX_SAFE_INTEGER`（`9.007e15`），前端读进去就会精度丢失。因此平台原始 id
+只作字符串存进 `source_id`，内部另发一个从 `9e8` 起的递增 id（Pixiv 现役 illust id
+约 `1.5e8`，作者 id 上限约 `1e8`，留足余量）。
+
+`collection.json` 因此新增两个顶层键：
+
+```text
+sources    "{source}:{source_id}" -> 内部 id 的幂等注册表
+counters   合成 id 游标
+```
+
+旧档案没有这两个键时按空处理，不需要迁移。
+
+### 排序变更
+
+`export()` 原先按 `id` 倒序。合成 id 恒大于 Pixiv id，沿用会让新来源永久占据首屏，
+故改为按 `created_at` 倒序，再按内部 id 和分P 序号稳定排序。
+旧档案没有多来源字段时仍按 Pixiv 处理，不需要迁移。
+
+### 手动触发一次
+
+```bash
+.venv/bin/python pipeline.py --root . --ingest-only
+```
+
+`--ingest-only` 跳过爬虫，只合并 pending 并走完校验与上传。
+调试时再加 `--skip-upload`。完全不想跑入库用 `--skip-ingest`。
+
+结果见 `ingest_report.json`。
 
 ## 安全提醒
 

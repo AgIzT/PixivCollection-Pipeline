@@ -20,5 +20,7 @@ This repository adds and maintains:
 - full-page bookmark scanning defaults
 - recovery-oriented duplicate filename handling
 - setup and operation documentation
+- multi-source pending-queue ingestion, a standard-library HTTP receiver, and shared manifest validation
+- systemd service/timer examples and separate metadata/image cache controls
 
 The R2 publishing workflow is intentionally kept here as a personal deployment pipeline rather than proposed upstream, because it depends on a specific PixivCollection + Cloudflare R2 hosting setup.

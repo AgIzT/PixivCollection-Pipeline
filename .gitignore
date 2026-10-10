@@ -16,3 +16,12 @@ pixiv_collection/restore_manifest.json
 pixiv_collection/archive_report.json
 pixiv_collection/upload_report.json
 pixiv_collection/pipeline.local.env
+
+# Private ingest configuration, queues, and runtime state
+*.local.env
+.env
+.agents/
+.codex/
+pixiv_collection/pending/
+pixiv_collection/ingest_report.json
+pixiv_collection/.pipeline.lock

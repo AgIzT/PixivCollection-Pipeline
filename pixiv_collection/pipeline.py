@@ -296,6 +296,70 @@ def run_crawler(args: argparse.Namespace, root: Path) -> None:
     print(f"Crawler log written: {log_file}")
 
 
+def run_ingest(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+    """合并 pending/ 队列（X、B站等非 Pixiv 来源）到本地归档。
+
+    放在 crawl 之后、validate 之前：产出的原图与 webp 由既有的
+    validate_archive 校验、upload_to_r2 增量上传，无需另开上传通道。
+    """
+
+    from collection import PixivCollection
+    from ingest import merge_pending
+
+    pending = root / "pending"
+    if not pending.is_dir() or not any(pending.glob("*.json")):
+        print("No pending ingest items.")
+        return {"scanned": 0, "merged": 0, "duplicate": 0, "failed": 0, "items": []}
+
+    backup_dir = backup_metadata(root)
+    print(f"Backed up metadata to {backup_dir}")
+
+    client = PixivCollection()
+    client.set_path(
+        {
+            "original": str(root / "image" / "original"),
+            "preview": str(root / "image" / "preview"),
+            "thumbnail": str(root / "image" / "thumbnail"),
+        }
+    )
+    collection_path = root / "collection.json"
+    if collection_path.exists():
+        client.read_data(str(collection_path))
+
+    # 与 client 共享同一批字典对象，merge_pending 的就地修改会反映到 save_data
+    collection = {
+        "authors": client.authors,
+        "images": client.images,
+        "tags": client.tags,
+        "files": client.files,
+        "sources": client.sources,
+        "counters": client.counters,
+    }
+    paths = {
+        kind: str(root / "image" / kind) + "/"
+        for kind in ("original", "preview", "thumbnail")
+    }
+
+    report = merge_pending(root, paths, collection)
+
+    if report["merged"]:
+        client.save_data(str(collection_path))
+        client.export(str(root / "images.json"))
+    else:
+        print("Nothing merged; collection.json left untouched.")
+
+    return report
+
+
+def write_ingest_report(root: Path, report: dict[str, Any]) -> None:
+    output = root / "ingest_report.json"
+    output.write_text(json.dumps(report, ensure_ascii=False, indent=2), "utf-8")
+    print(
+        f"Ingest report written: {output} "
+        f"(merged={report['merged']} duplicate={report['duplicate']} failed={report['failed']})"
+    )
+
+
 def normalize_prefix(prefix: str) -> str:
     return prefix.strip().strip("/")
 
@@ -376,7 +440,7 @@ class R2Client:
         payload: bytes = b"",
         extra_headers: dict[str, str] | None = None,
     ) -> bytes:
-        now = dt.datetime.now(dt.UTC)
+        now = dt.datetime.now(dt.timezone.utc)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
 
@@ -502,8 +566,30 @@ class R2Client:
             "PUT",
             object_key=key,
             payload=payload,
-            extra_headers={"content-type": content_type},
+            extra_headers={
+                "content-type": content_type,
+                "cache-control": cache_control_for(key),
+            },
         )
+
+
+def cache_control_for(key: str) -> str:
+    """按对象类型给缓存策略。
+
+    上传时不带 Cache-Control 的话，浏览器会按 Last-Modified 走启发式缓存，
+    于是每天入库后回访用户拿到的仍是旧 images.json——实测过一次：
+    浏览器拿到 1699 条，同一时刻 no-store 直取是 1700 条。
+
+    images.json / collection.json 每天都变，必须每次校验新鲜度；
+    带 ETag 时校验命中只回 304，代价很低。
+    image/ 下的文件名带作品 id，内容一次写定不再变化，可以长缓存。
+    """
+
+    if key.endswith(".json"):
+        return "no-cache"
+    if key.startswith("image/"):
+        return "public, max-age=31536000, immutable"
+    return "no-cache"
 
 
 def iter_publish_files(root: Path) -> Iterable[tuple[str, Path]]:
@@ -579,10 +665,16 @@ def upload_to_r2(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         key = join_key(prefix, relative_key)
         size = path.stat().st_size
         remote_obj = remote.get(key)
-        if remote_obj and remote_obj.size == size:
+        # 两个元数据 JSON 始终重传：它们本来几乎每天都变，而按大小跳过会让
+        # 「内容没变但响应头要更新」这类情况永远同步不上去（Cache-Control 就踩过）。
+        # 代价是空跑时多传几 MB，可以忽略。
+        always = relative_key.endswith(".json")
+        if remote_obj and remote_obj.size == size and not always:
             skipped += 1
             continue
-        reason = "missing" if remote_obj is None else f"size {remote_obj.size}->{size}"
+        reason = ("missing" if remote_obj is None
+                  else (f"size {remote_obj.size}->{size}" if remote_obj.size != size
+                        else "metadata refresh"))
         pending.append((key, path, size, reason))
 
     total_bytes = sum(item[2] for item in pending)
@@ -595,7 +687,7 @@ def upload_to_r2(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         print(f"  ... {len(pending) - 30} more")
 
     report = {
-        "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "prefix": prefix,
         "local_files": len(local_files),
         "skipped_same_size": skipped,
@@ -662,6 +754,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite-preview", action="store_true")
     parser.add_argument("--overwrite-thumbnail", action="store_true")
     parser.add_argument("--skip-crawl", action="store_true")
+    parser.add_argument("--skip-ingest", action="store_true")
+    parser.add_argument("--ingest-only", action="store_true")
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--dry-run-upload", action="store_true")
@@ -687,10 +781,14 @@ def main(argv: list[str] | None = None) -> int:
         write_validation_report(root, report)
         return 1 if archive_has_critical_problem(report) else 0
 
-    if not args.skip_crawl:
+    if not args.skip_crawl and not args.ingest_only:
         if not prompt_pixiv_credentials(args):
             return 2
         run_crawler(args, root)
+
+    if not args.skip_ingest:
+        ingest_report = run_ingest(args, root)
+        write_ingest_report(root, ingest_report)
 
     report = validate_archive(root)
     write_validation_report(root, report)
