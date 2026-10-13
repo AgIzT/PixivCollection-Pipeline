@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from ingest_schema import ALLOWED_EXT, merge_bookmark_contexts, validate_manifest
+from ingest_schema import ALLOWED_EXT, merge_bookmark_accounts, merge_bookmark_contexts, validate_manifest
 from receiver import already_known, stage_item
 from archive_io import atomic_json as _atomic_json
 
@@ -90,7 +90,7 @@ def manifest_for(metadata: dict[str, Any], discovered_at: str) -> dict[str, Any]
                 'source_url': 'https://x.com/i/web/status/' + numeric_id(quote_id)}
                if quote_id not in (None, 0, '0', '') else
                {'kind': 'direct', 'source_id': source_id, 'source_url': source_url})
-    return {
+    manifest = {
         "source": "twitter", "source_id": source_id,
         "source_url": source_url,
         "bookmark_contexts": [context],
@@ -106,6 +106,12 @@ def manifest_for(metadata: dict[str, Any], discovered_at: str) -> dict[str, Any]
                    "account": account, "url": f"https://x.com/{account}"},
         "files": [],
     }
+    if '_bookmark_account' in metadata:
+        labels = merge_bookmark_accounts([metadata['_bookmark_account']])
+        if not labels:
+            raise SyncError('Invalid local account label')
+        manifest['bookmark_accounts'] = labels
+    return manifest
 
 
 @dataclass
@@ -113,6 +119,7 @@ class Discovery:
     messages: list[Any]
     complete: bool
     full_scan: bool = True
+    account_scans: dict[str, Any] | None = None
 
 
 class GalleryDL:
@@ -213,6 +220,52 @@ class GalleryDL:
             raise SyncError("Image download failed")
 
 
+class MultiGalleryDL:
+    """Independent sessions discovered serially into one additive archive."""
+
+    strict_dimensions = True
+    max_posts = None
+
+    def __init__(self, adapters: list[tuple[str, Any]]):
+        names = [name for name, _ in adapters]
+        if (not names or any(not isinstance(name, str) for name in names)
+                or len(set(names)) != len(names)
+                or merge_bookmark_accounts(names) != sorted(names)
+                or any(getattr(adapter, 'max_posts', None) is not None for _, adapter in adapters)):
+            raise SyncError('Invalid account configuration')
+        self.adapters = adapters
+
+    def discover(self) -> Discovery:
+        messages, accounts = [], {}
+        for name, adapter in self.adapters:
+            try:
+                discovered = adapter.discover()
+                accounts[name] = {'scan_complete': discovered.complete and discovered.full_scan}
+                for message in discovered.messages:
+                    if not isinstance(message, list) or not message:
+                        accounts[name]['scan_complete'] = False
+                        continue
+                    if message[0] in (2, 3):
+                        if not isinstance(message[-1], dict):
+                            accounts[name]['scan_complete'] = False
+                            continue
+                        # Keep account sessions and upstream metadata independent.
+                        message = list(message)
+                        message[-1] = dict(message[-1], _bookmark_account=name)
+                    elif message[0] in (-1, 6):
+                        accounts[name]['scan_complete'] = False
+                    messages.append(message)
+            except Exception:
+                accounts[name] = {'scan_complete': False}
+            if not accounts[name]['scan_complete']:
+                accounts[name]['error'] = 'Account discovery incomplete; retained for retry'
+        return Discovery(messages, all(a['scan_complete'] for a in accounts.values()), True, accounts)
+
+    def download(self, url: str, destination: Path) -> None:
+        # X public-media downloads do not receive any account config or Cookie.
+        self.adapters[0][1].download(url, destination)
+
+
 class FixtureAdapter:
     """Explicit offline fixture adapter. Never invokes gallery-dl or a network client."""
 
@@ -277,6 +330,7 @@ class BookmarkSync:
         self.max_posts = getattr(adapter, 'max_posts', None)
         self.selected_ids: set[str] = set()
         self.full_scan = self.max_posts is None
+        self.account_scans: dict[str, Any] = {}
         self.work = self.root / ".x-sync"
         self.work.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_path = self.work / "state.json"
@@ -294,6 +348,7 @@ class BookmarkSync:
 
     def discover(self) -> bool:
         discovery = self.adapter.discover()
+        self.account_scans = discovery.account_scans or {}
         self.full_scan = discovery.full_scan
         seen_at = now()
         errors = 0
@@ -322,6 +377,10 @@ class BookmarkSync:
                 })
                 item['manifest']['bookmark_contexts'] = merge_bookmark_contexts(
                     item['manifest'].get('bookmark_contexts'), manifest['bookmark_contexts'])
+                labels = merge_bookmark_accounts(item['manifest'].get('bookmark_accounts'),
+                                                 manifest.get('bookmark_accounts'))
+                if labels:
+                    item['manifest']['bookmark_accounts'] = labels
                 if item["phase"] in ("archived", "published"):
                     item['last_seen'] = seen_at
                     continue
@@ -346,6 +405,10 @@ class BookmarkSync:
                 item["last_seen"] = seen_at
             except (KeyError, TypeError, ValueError, SyncError):
                 errors += 1
+                label = metadata.get('_bookmark_account') if isinstance(metadata, dict) else None
+                if label in self.account_scans:
+                    self.account_scans[label] = {'scan_complete': False,
+                                               'error': 'Account metadata incomplete; retained for retry'}
         complete = discovery.complete and errors == 0
         if self.max_posts is not None:
             self.state['sample_ids'] = sorted(self.selected_ids)
@@ -353,6 +416,18 @@ class BookmarkSync:
         self.state["sample_complete"] = complete and not self.full_scan
         if complete and self.full_scan:
             self.state["last_complete_scan"] = seen_at
+        if self.account_scans:
+            accounts = self.state.setdefault('accounts', {})
+            for label, value in accounts.items():
+                value['configured'] = label in self.account_scans
+            for label, scan in self.account_scans.items():
+                previous = accounts.get(label, {})
+                accounts[label] = {**scan, 'last_attempt': seen_at, 'configured': True,
+                                   'last_complete_scan': seen_at if scan['scan_complete']
+                                   else previous.get('last_complete_scan')}
+        else:
+            for account in self.state.get('accounts', {}).values():
+                account['configured'] = False
         self.save()
         return complete
 
@@ -376,12 +451,22 @@ class BookmarkSync:
                 contexts = merge_bookmark_contexts(data.get('bookmark_contexts'),
                                                    item['manifest'].get('bookmark_contexts'))
                 changed = bool(contexts) and data.get('bookmark_contexts') != contexts
+                labels = merge_bookmark_accounts(data.get('bookmark_accounts'),
+                                                 item['manifest'].get('bookmark_accounts'))
+                if labels:
+                    changed |= data.get('bookmark_accounts') != labels
+                    data['bookmark_accounts'] = labels
                 if contexts:
                     data['bookmark_contexts'] = contexts
+                if contexts or labels:
                     for image in images:
                         if str(image['id']) == str(internal_id):
-                            changed |= image.get('bookmark_contexts') != contexts
-                            image['bookmark_contexts'] = contexts
+                            if contexts:
+                                changed |= image.get('bookmark_contexts') != contexts
+                                image['bookmark_contexts'] = contexts
+                            if labels:
+                                changed |= image.get('bookmark_accounts') != labels
+                                image['bookmark_accounts'] = labels
                 if changed:
                     # Both files are replaced atomically while the archive lock
                     # is held. A crash between them is repaired next reconcile.
@@ -513,6 +598,8 @@ class BookmarkSync:
                   "pending_retry": sum(bool(i.get("error")) for i in self.state["items"].values()),
                   "publication_blocked": publication_blocked,
                   "publication_confirmed": publication_ok}
+        if self.account_scans:
+            result['accounts'] = self.account_scans
         atomic_json(self.work / "report.json", result)
         return result
 
@@ -556,6 +643,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--fixture", type=Path, help="Offline synthetic discovery fixture")
     parser.add_argument("--fixture-media", type=Path)
     parser.add_argument("--gallery-config", type=Path)
+    parser.add_argument('--account-config', action='append', default=[], metavar='NAME=PATH',
+                        help='Repeat for independent named X sessions in one archive')
     parser.add_argument("--gallery-dl", default="gallery-dl")
     parser.add_argument("--publish", action="store_true", help="Run existing ingestion and R2 publication (live only)")
     parser.add_argument("--max-posts", type=int, help="Isolated sample of 1-10 whole posts; never a complete account scan")
@@ -565,6 +654,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--r2-prefix", help="Explicit upload prefix; samples require x-smoke/<run>/")
     parser.add_argument("--r2-bucket", help="Explicit upload bucket override")
     args = parser.parse_args(argv)
+    if args.account_config and (not args.live or args.gallery_config or args.max_posts is not None):
+        parser.error('--account-config requires live full mode and cannot be combined with --gallery-config')
     if args.max_posts is not None:
         if not 1 <= args.max_posts <= 10:
             parser.error("--max-posts must be between 1 and 10")
@@ -580,10 +671,27 @@ def main(argv: list[str] | None = None) -> int:
     if not 2 <= args.min_free_gib <= 100:
         parser.error("--min-free-gib must be between 2 and 100")
     if args.live:
-        if args.gallery_config is None:
+        if args.gallery_config is None and not args.account_config:
             parser.error("--live requires --gallery-config; no automatic credential extraction")
-        adapter = GalleryDL(args.gallery_config, args.gallery_dl, max_posts=args.max_posts,
-                            page_size=args.page_size or (2 if args.max_posts else None))
+        if args.account_config:
+            named = []
+            configs = set()
+            for value in args.account_config:
+                name, separator, path = value.partition('=')
+                if not separator or not path or merge_bookmark_accounts([name]) != [name]:
+                    parser.error('Invalid named account configuration')
+                config = Path(path).resolve()
+                if config in configs:
+                    parser.error('Account configs must be separate files')
+                configs.add(config)
+                named.append((name, GalleryDL(config, args.gallery_dl, page_size=args.page_size)))
+            try:
+                adapter = MultiGalleryDL(named)
+            except SyncError:
+                parser.error('Invalid named account configuration')
+        else:
+            adapter = GalleryDL(args.gallery_config, args.gallery_dl, max_posts=args.max_posts,
+                                page_size=args.page_size or (2 if args.max_posts else None))
     else:
         if args.fixture_media is None or args.publish:
             parser.error("Offline mode requires --fixture-media and forbids --publish")

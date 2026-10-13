@@ -16,6 +16,13 @@ ALLOWED_EXT = {"jpg", "jpeg", "png", "gif", "webp", "avif"}
 MAX_PARTS = 50
 
 
+def merge_bookmark_accounts(*groups: Any) -> list[str]:
+    """Only opaque local labels are allowed; never infer a login from artists."""
+    return sorted({label for group in groups if isinstance(group, list)
+                   for label in group if isinstance(label, str)
+                   and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}', label)})
+
+
 def merge_bookmark_contexts(*groups: Any) -> list[dict[str, str]]:
     """Keep distinct direct/quote associations, excluding malformed metadata."""
     contexts = {}

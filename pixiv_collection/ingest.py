@@ -49,6 +49,7 @@ from ingest_schema import (  # noqa: F401  供既有调用方继续从本模块�
     MAX_PARTS,
     disk_state,
     merge_bookmark_contexts,
+    merge_bookmark_accounts,
     validate_manifest,
 )
 
@@ -197,6 +198,9 @@ def merge_item(collection: dict[str, Any], paths: dict[str, str],
         contexts = merge_bookmark_contexts(data.get('bookmark_contexts'), manifest.get('bookmark_contexts'))
         if contexts:
             data['bookmark_contexts'] = contexts
+        labels = merge_bookmark_accounts(data.get('bookmark_accounts'), manifest.get('bookmark_accounts'))
+        if labels:
+            data['bookmark_accounts'] = labels
         return {"status": "duplicate", "key": key,
                 "image_id": collection["sources"][key]}
 
@@ -231,6 +235,9 @@ def merge_item(collection: dict[str, Any], paths: dict[str, str],
     contexts = merge_bookmark_contexts(manifest.get('bookmark_contexts'))
     if contexts:
         image_data['bookmark_contexts'] = contexts
+    labels = merge_bookmark_accounts(manifest.get('bookmark_accounts'))
+    if labels:
+        image_data['bookmark_accounts'] = labels
 
     written: list[str] = []
     registered: list[str] = []

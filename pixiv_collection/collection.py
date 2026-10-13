@@ -749,7 +749,7 @@ class PixivCollection():
             # 其余字段仅在存在时输出, 避免给存量 Pixiv 数据平添体积
             image_data = self.images[image_id]['data']
             image['source'] = image_data.get('source', 'pixiv')
-            for key in ('source_url', 'collected_at', 'bookmark_contexts'):
+            for key in ('source_url', 'collected_at', 'bookmark_contexts', 'bookmark_accounts'):
                 if image_data.get(key):
                     image[key] = image_data[key]
             author_url = self.authors[author_id]['data'].get('url')
