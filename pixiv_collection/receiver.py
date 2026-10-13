@@ -105,8 +105,8 @@ def already_known(root: Path, source: str, source_id: str) -> str | None:
     pending = root / "pending"
     if (pending / f"{name}.json").exists():
         return "pending"
-    if (pending / "consumed" / f"{name}.json").exists():
-        return "collection"
+    # Only the persisted source registry confirms an archive commit. A leftover
+    # consumed manifest from an interrupted older pipeline is not sufficient.
     return None
 
 

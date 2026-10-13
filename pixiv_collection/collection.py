@@ -11,6 +11,7 @@ from pixivpy3 import AppPixivAPI
 from PIL import Image
 
 from colorthief import ColorThief
+from archive_io import atomic_json
 
 MAX_RETRY = 3
 WAIT_TIME = 1.5
@@ -386,19 +387,14 @@ class PixivCollection():
             sorted(self.files.items(),
                    key=lambda x: x[1]['data']['id'] * 1000 + x[1]['data'][
                        'part']))
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(
-                {
-                    'authors': self.authors,
-                    'images': self.images,
-                    'tags': self.tags,
-                    'files': self.files,
-                    'sources': self.sources,
-                    'counters': self.counters,
-                },
-                f,
-                indent=4,
-                ensure_ascii=False)
+        atomic_json(file_path, {
+            'authors': self.authors,
+            'images': self.images,
+            'tags': self.tags,
+            'files': self.files,
+            'sources': self.sources,
+            'counters': self.counters,
+        }, indent=4, mode=0o644)
         logger.info(
             f'保存数据成功, 文件:{len(self.files)} 图片:{len(self.images)} 作者:{len(self.authors)} 标签:{len(self.tags)}'
         )
@@ -753,7 +749,7 @@ class PixivCollection():
             # 其余字段仅在存在时输出, 避免给存量 Pixiv 数据平添体积
             image_data = self.images[image_id]['data']
             image['source'] = image_data.get('source', 'pixiv')
-            for key in ('source_url', 'collected_at'):
+            for key in ('source_url', 'collected_at', 'bookmark_contexts', 'bookmark_accounts'):
                 if image_data.get(key):
                     image[key] = image_data[key]
             author_url = self.authors[author_id]['data'].get('url')
@@ -768,5 +764,4 @@ class PixivCollection():
                     (-sort_timestamp(x['created_at']), -x['id'], x['part']))
         logger.info(f'导出{len(result)}条数据至 {file_path}')
 
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False)
+        atomic_json(file_path, result, mode=0o644)

@@ -1,0 +1,17 @@
+[Unit]
+Description=Additive daily X bookmark image backup in the Beijing morning window
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pixiv_collection
+Environment=PYTHONUNBUFFERED=1
+# The wrapper holds only .x-sync/daily.lock; x_bookmarks owns .pipeline.lock.
+# Its locked callback rechecks the 03:00-06:00 Beijing start window and records
+# one attempted batch per date. A started batch may finish after 06:00.
+# X uses its own venv and two manually prepared sessions; Pixiv keeps its venv.
+ExecStart=/opt/pixiv_collection/.venv-x/bin/python /opt/pixiv_collection/x_bookmarks_daily.py --root /opt/pixiv_collection --live --gallery-dl /opt/pixiv_collection/.venv-x/bin/gallery-dl --account-config account-1=/opt/pixiv_collection/auth/gallery-dl.account1.local.json --account-config account-2=/opt/pixiv_collection/auth/gallery-dl.account2.local.json --publish --max-download-mib 512 --min-free-gib 5
+TimeoutStartSec=4h
+UMask=0077
+Restart=no

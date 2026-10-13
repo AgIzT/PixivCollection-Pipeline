@@ -1,0 +1,20 @@
+{
+  "extractor": {
+    "twitter": {
+      "size": ["orig"],
+      "videos": false,
+      "previews": false,
+      "cards": false,
+      "quoted": true,
+      "quoted-expand": true,
+      "ratelimit": "abort",
+      "retries-api": 3
+    },
+    "netrc": false,
+    "cookies-from-browser": null,
+    "cookies-update": false
+  },
+  "output": {
+    "private": false
+  }
+}

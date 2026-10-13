@@ -304,7 +304,7 @@ def run_ingest(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     """
 
     from collection import PixivCollection
-    from ingest import merge_pending
+    from ingest import commit_pending, merge_pending
 
     pending = root / "pending"
     if not pending.is_dir() or not any(pending.glob("*.json")):
@@ -342,9 +342,10 @@ def run_ingest(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 
     report = merge_pending(root, paths, collection)
 
-    if report["merged"]:
+    if report["merged"] or report["duplicate"]:
         client.save_data(str(collection_path))
         client.export(str(root / "images.json"))
+        commit_pending(root, report)
     else:
         print("Nothing merged; collection.json left untouched.")
 
@@ -705,8 +706,22 @@ def upload_to_r2(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         client.put_file(key, path)
         return {"key": key, "size": size, "reason": reason}
 
+    metadata = [item for name in PUBLISH_FILES for item in pending if item[1] == root / name]
+    media = [item for item in pending if item not in metadata]
+    report['deferred_metadata'] = []
+
+    def failed(item: tuple[str, Path, int, str], exc: Exception) -> None:
+        # Signed requests and arbitrary client exceptions must not leak into
+        # journal/report diagnostics. Only object keys and safe status survive.
+        error = {'key': item[0], 'error': 'Object upload failed',
+                 'error_type': type(exc).__name__}
+        if isinstance(getattr(exc, 'code', None), int):
+            error['http_status'] = exc.code
+        report['errors'].append(error)
+        print(f"error {item[0]}: Object upload failed")
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.upload_workers)) as executor:
-        futures = {executor.submit(_upload, item): item for item in pending}
+        futures = {executor.submit(_upload, item): item for item in media}
         completed = 0
         for future in concurrent.futures.as_completed(futures):
             completed += 1
@@ -716,9 +731,22 @@ def upload_to_r2(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 report["uploaded"].append(uploaded)
                 print(f"[{completed}/{len(pending)}] uploaded {uploaded['key']}")
             except Exception as exc:
-                key = item[0]
-                report["errors"].append({"key": key, "error": str(exc)})
-                print(f"[{completed}/{len(pending)}] error {key}: {exc}")
+                failed(item, exc)
+
+    if report['errors']:
+        report['deferred_metadata'] = [item[0] for item in metadata]
+        return report
+    # Expose the new image list only after every required media object exists.
+    # collection.json goes first; the browser's images.json is the final commit.
+    for index, item in enumerate(metadata):
+        try:
+            uploaded = _upload(item)
+            report['uploaded'].append(uploaded)
+            print(f"uploaded {uploaded['key']}")
+        except Exception as exc:
+            failed(item, exc)
+            report['deferred_metadata'] = [remaining[0] for remaining in metadata[index + 1:]]
+            break
 
     return report
 
@@ -756,6 +784,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-crawl", action="store_true")
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--ingest-only", action="store_true")
+    parser.add_argument("--publication-id", default="", help="Receipt identifier for a serialized sync run")
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--dry-run-upload", action="store_true")
@@ -798,6 +827,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.skip_upload:
         upload_report = upload_to_r2(args, root)
+        upload_report['publication_id'] = args.publication_id
         write_upload_report(root, upload_report)
     else:
         print("Upload skipped.")
