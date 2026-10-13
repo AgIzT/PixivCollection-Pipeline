@@ -1,4 +1,4 @@
-# X 书签独立备份（已完成隔离实测，尚未生产部署）
+# X 书签自动归档
 
 只处理书签图片，不处理点赞或视频。每日完整遍历接口可返回的书签，依据
 `twitter:<帖子 ID 字符串>` 去重，不使用最大 ID、帖子发布时间或首个已知帖子作为停止条件。
@@ -215,3 +215,32 @@ X 网页接口及 gallery-dl 提取器可能变化；固定版本可保证本轮
 官方依据：[引用图片](https://gdl-org.github.io/docs/configuration.html#extractor-twitter-quoted)、
 [原图尺寸](https://gdl-org.github.io/docs/configuration.html#extractor-twitter-size)、
 [限流行为](https://gdl-org.github.io/docs/configuration.html#extractor-twitter-ratelimit)。
+
+## 生产部署与每日随机启动
+
+生产入口保留现有 `/opt/pixiv_collection` 归档，复用其来源注册表分配内部 ID；
+不能把隔离 `collection.json` 或 `images.json` 直接替换到生产。
+部署前先备份实际代码、元数据与 units，在独立目录用旧图片只读硬链接做增量入库预演，
+并确认新文件名不与 R2 现有对象冲突。生产投递和入库期间短暂停止 receiver，
+同时持现有 `.pipeline.lock`；成功提交或异常退出后立即恢复接收器。
+现有 Pixiv unit、定时器及 `.venv` 均保留。X 使用独立 `.venv-x`，依赖固定在
+`requirements-x-runtime.txt`；两个账号分别由 `auth/gallery-dl.account1.local.json` 与
+`auth/gallery-dl.account2.local.json` 提供会话，目录 0700、文件 0600，永不提交或打印。
+
+`systemd/pixiv-x-bookmarks.service.example` 和 `.timer.example` 配置为：
+
+- 每天北京时间 03:00 起加新随机延迟（最多 10799 秒），在 03:00–06:00 内启动一次。
+- 显式 `Asia/Shanghai`，兼容主机 systemd 249；`AccuracySec=1s`、`FixedRandomDelay=no`。
+- `Persistent=false`，停机错过当天不在窗口外补跑；服务入口及取得归档锁后都复检窗口。
+- 已启动的任务可以在 06:00 后完成。归档锁冲突每 60 秒有限重试，06:00 尚未拿到就跳过。
+- wrapper 使用独立 daily.lock；主采集器自己持 pipeline.lock，避免重复外层 flock。
+- 北京日期的尝试标记在持归档锁后、读取账号前原子保存；同日成功、失败或中断均不自动重复整批。
+  失败项保留，次日继续；运维手动排障可直接调用主采集器。
+- 没有无界 `Restart=on-failure`。日志仅输出固定结果和允许的计数，详细状态在私有 `.x-sync/`。
+
+上传先完成所有媒体对象；任一媒体失败时保留旧线上 JSON。
+媒体齐全后顺序发表 `collection.json`，最后发表浏览器读取的 `images.json`；
+两个对象各自原子 PUT，仍不是跨对象事务，失败留待重试。
+新增 7 项调度及 4 项发布顺序回归，全部 74 项在专用 X 环境通过。
+
+官方依据：[systemd 249 timer](https://github.com/systemd/systemd/blob/v249/man/systemd.timer.xml)。

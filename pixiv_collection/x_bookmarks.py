@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from ingest_schema import ALLOWED_EXT, merge_bookmark_accounts, merge_bookmark_contexts, validate_manifest
@@ -35,6 +35,10 @@ DEFAULT_MIN_FREE_BYTES = 5 * 1024 ** 3
 
 class SyncError(RuntimeError):
     """Safe diagnostic: never contains subprocess output or authentication data."""
+
+
+class ArchiveBusy(SyncError):
+    """The shared archive lock is held by another archive writer."""
 
 
 def now() -> str:
@@ -618,13 +622,13 @@ def archive_lock(root: Path):
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as exc:
-                raise SyncError('Another archive task is active') from exc
+                raise ArchiveBusy('Another archive task is active') from exc
         else:
             import fcntl
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                raise SyncError('Another archive task is active') from exc
+                raise ArchiveBusy('Another archive task is active') from exc
         try:
             yield
         finally:
@@ -635,7 +639,7 @@ def archive_lock(root: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, before_sync: Callable[[], bool] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -700,6 +704,8 @@ def main(argv: list[str] | None = None) -> int:
     budget_mib = args.max_download_mib or (256 if args.max_posts else None)
     # The publisher runs under this parent's lock; do not wrap this CLI in flock again.
     with archive_lock(args.root):
+        if before_sync is not None and not before_sync():
+            return 0
         report = BookmarkSync(args.root, adapter,
                               PipelinePublisher(args.r2_prefix, args.r2_bucket) if args.publish else None,
                               min_free_bytes=int(args.min_free_gib * 1024 ** 3),

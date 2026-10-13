@@ -1,0 +1,15 @@
+# Dedicated X runtime, matching the versions used in real-account verification.
+# Keep the existing Pixiv .venv unchanged.
+certifi==2026.7.22
+charset-normalizer==3.5.2
+cloudscraper==1.2.71
+gallery-dl==1.32.16
+idna==3.20
+loguru==0.7.3
+Pillow==12.3.0
+PixivPy3==3.7.5
+pyparsing==3.3.3
+requests==2.34.2
+requests-toolbelt==1.0.0
+typing_extensions==4.16.0
+urllib3==2.8.0

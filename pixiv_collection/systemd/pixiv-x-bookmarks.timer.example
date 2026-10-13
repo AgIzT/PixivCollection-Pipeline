@@ -1,11 +1,14 @@
 [Unit]
-Description=Daily X bookmark image backup example (not enabled)
+Description=Daily X bookmark image backup at a random Beijing morning time
 
 [Timer]
-# Example UTC time, separated from the existing 08:13 Pixiv timer.
-OnCalendar=*-*-* 09:30:00 UTC
-RandomizedDelaySec=10min
-Persistent=true
+# Compatible with systemd 249; each day gets a new random start delay.
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+RandomizedDelaySec=10799s
+AccuracySec=1s
+FixedRandomDelay=no
+# Do not replay a missed run outside the permitted start window after boot.
+Persistent=false
 Unit=pixiv-x-bookmarks.service
 
 [Install]
