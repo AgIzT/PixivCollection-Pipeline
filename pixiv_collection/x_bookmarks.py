@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from ingest_schema import ALLOWED_EXT, validate_manifest
+from ingest_schema import ALLOWED_EXT, merge_bookmark_contexts, validate_manifest
 from receiver import already_known, stage_item
 from archive_io import atomic_json as _atomic_json
 
@@ -84,9 +84,16 @@ def manifest_for(metadata: dict[str, Any], discovered_at: str) -> dict[str, Any]
     if not re.fullmatch(r"[A-Za-z0-9_]{1,50}", account):
         raise SyncError("Invalid author handle")
     content = str(metadata.get("content") or "")
+    source_url = f"https://x.com/{account}/status/{source_id}"
+    quote_id = metadata.get('quote_id')
+    context = ({'kind': 'quote', 'source_id': numeric_id(quote_id),
+                'source_url': 'https://x.com/i/web/status/' + numeric_id(quote_id)}
+               if quote_id not in (None, 0, '0', '') else
+               {'kind': 'direct', 'source_id': source_id, 'source_url': source_url})
     return {
         "source": "twitter", "source_id": source_id,
-        "source_url": f"https://x.com/{account}/status/{source_id}",
+        "source_url": source_url,
+        "bookmark_contexts": [context],
         "title": content.splitlines()[0][:160] if content else "X bookmark",
         "caption": content,
         "created_at": timestamp(metadata.get("date"), discovered_at),
@@ -161,7 +168,8 @@ class GalleryDL:
             "extractor.abort": None, "extractor.terminate": None,
             "extractor.twitter.cursor": None, "extractor.twitter.videos": False,
             "extractor.twitter.previews": False, "extractor.twitter.cards": False,
-            "extractor.twitter.articles": False, "extractor.twitter.quoted": False,
+            "extractor.twitter.articles": False, "extractor.twitter.quoted": True,
+            "extractor.twitter.quoted-expand": True,
             "extractor.twitter.expand": False, "extractor.twitter.twitpic": False,
             "extractor.twitter.text-tweets": False, "extractor.twitter.transform": True,
             "extractor.twitter.retweets": "original", "extractor.twitter.replies": True,
@@ -312,7 +320,10 @@ class BookmarkSync:
                     "manifest": manifest, "media": {}, "expected": expected,
                     "phase": "discovered", "attempts": 0,
                 })
+                item['manifest']['bookmark_contexts'] = merge_bookmark_contexts(
+                    item['manifest'].get('bookmark_contexts'), manifest['bookmark_contexts'])
                 if item["phase"] in ("archived", "published"):
+                    item['last_seen'] = seen_at
                     continue
                 if item["expected"] != expected:
                     raise SyncError("Post media changed before backup completion")
@@ -355,15 +366,37 @@ class BookmarkSync:
         if not isinstance(images, list):
             raise SyncError("Invalid archive export")
         exported = {}
+        metadata_changed = False
         for image in images:
             exported.setdefault(str(image["id"]), set()).add(int(image["part"]))
         for source_id, item in self.state["items"].items():
             internal_id = collection.get("sources", {}).get("twitter:" + source_id)
             if internal_id is not None and exported.get(str(internal_id)) == set(range(item["expected"])):
+                data = collection['images'][str(internal_id)]['data']
+                contexts = merge_bookmark_contexts(data.get('bookmark_contexts'),
+                                                   item['manifest'].get('bookmark_contexts'))
+                changed = bool(contexts) and data.get('bookmark_contexts') != contexts
+                if contexts:
+                    data['bookmark_contexts'] = contexts
+                    for image in images:
+                        if str(image['id']) == str(internal_id):
+                            changed |= image.get('bookmark_contexts') != contexts
+                            image['bookmark_contexts'] = contexts
+                if changed:
+                    # Both files are replaced atomically while the archive lock
+                    # is held. A crash between them is repaired next reconcile.
+                    metadata_changed = True
+                    item['phase'] = 'archived'
                 if item["phase"] != "published":
                     item["phase"] = "archived"
                 item["internal_id"] = internal_id
                 item.pop("error", None)
+        if metadata_changed:
+            # Persist the pending publication before either metadata replace;
+            # restarting after both writes must still retry the R2 metadata.
+            self.save()
+            atomic_json(collection_path, collection)
+            atomic_json(images_path, images)
 
     def queue(self, source_id: str, item: dict[str, Any]) -> None:
         numeric_id(source_id)

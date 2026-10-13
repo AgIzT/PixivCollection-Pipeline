@@ -8,11 +8,31 @@
 from __future__ import annotations
 
 import shutil
+import re
 from typing import Any
 
 KNOWN_SOURCES = {"pixiv", "twitter", "bilibili", "mihuashi", "local"}
 ALLOWED_EXT = {"jpg", "jpeg", "png", "gif", "webp", "avif"}
 MAX_PARTS = 50
+
+
+def merge_bookmark_contexts(*groups: Any) -> list[dict[str, str]]:
+    """Keep distinct direct/quote associations, excluding malformed metadata."""
+    contexts = {}
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for item in group:
+            if not isinstance(item, dict) or item.get('kind') not in ('direct', 'quote'):
+                continue
+            source_id = str(item.get('source_id') or '')
+            url = str(item.get('source_url') or '')
+            if (not re.fullmatch(r'[1-9][0-9]{0,29}', source_id)
+                    or not re.fullmatch(r'https://x\.com/(?:[A-Za-z0-9_]{1,50}/status|i/web/status)/' + source_id, url)):
+                continue
+            contexts[(item['kind'], source_id)] = {
+                'kind': item['kind'], 'source_id': source_id, 'source_url': url}
+    return [contexts[key] for key in sorted(contexts)]
 
 # 磁盘水位。原图归档是只增不减的，装满会让爬虫和入库一起失败，
 # 所以宁可提前拒收：拒掉的投递可以重投，写坏的归档不好收拾。

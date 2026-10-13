@@ -48,6 +48,7 @@ from ingest_schema import (  # noqa: F401  供既有调用方继续从本模块�
     KNOWN_SOURCES,
     MAX_PARTS,
     disk_state,
+    merge_bookmark_contexts,
     validate_manifest,
 )
 
@@ -191,6 +192,11 @@ def merge_item(collection: dict[str, Any], paths: dict[str, str],
     key = f"{source}:{source_id}"
 
     if key in collection["sources"]:
+        image_id = collection['sources'][key]
+        data = collection['images'][str(image_id)]['data']
+        contexts = merge_bookmark_contexts(data.get('bookmark_contexts'), manifest.get('bookmark_contexts'))
+        if contexts:
+            data['bookmark_contexts'] = contexts
         return {"status": "duplicate", "key": key,
                 "image_id": collection["sources"][key]}
 
@@ -222,6 +228,9 @@ def merge_item(collection: dict[str, Any], paths: dict[str, str],
     source_url = str(manifest.get("source_url") or "").strip()
     if source_url:
         image_data["source_url"] = source_url
+    contexts = merge_bookmark_contexts(manifest.get('bookmark_contexts'))
+    if contexts:
+        image_data['bookmark_contexts'] = contexts
 
     written: list[str] = []
     registered: list[str] = []

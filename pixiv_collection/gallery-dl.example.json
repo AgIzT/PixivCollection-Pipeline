@@ -5,7 +5,8 @@
       "videos": false,
       "previews": false,
       "cards": false,
-      "quoted": false,
+      "quoted": true,
+      "quoted-expand": true,
       "ratelimit": "abort",
       "retries-api": 3
     },
