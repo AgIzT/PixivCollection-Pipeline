@@ -1,7 +1,7 @@
 {
   "extractor": {
     "twitter": {
-      "size": ["orig", "4096x4096", "large"],
+      "size": ["orig"],
       "videos": false,
       "previews": false,
       "cards": false,

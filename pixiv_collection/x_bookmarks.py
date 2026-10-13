@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -28,6 +29,8 @@ from archive_io import atomic_json as _atomic_json
 
 GALLERY_DL_VERSION = "1.32.16"
 BOOKMARK_URL = "https://x.com/i/bookmarks"
+MAX_IMAGE_BYTES = 50 * 1024 ** 2
+DEFAULT_MIN_FREE_BYTES = 5 * 1024 ** 3
 
 
 class SyncError(RuntimeError):
@@ -102,16 +105,25 @@ def manifest_for(metadata: dict[str, Any], discovered_at: str) -> dict[str, Any]
 class Discovery:
     messages: list[Any]
     complete: bool
+    full_scan: bool = True
 
 
 class GalleryDL:
     """CLI contract verified against the official Codeberg v1.32.16 tag."""
 
-    def __init__(self, config: Path, executable: str = "gallery-dl", timeout: int = 1800):
+    def __init__(self, config: Path, executable: str = "gallery-dl", timeout: int = 1800,
+                 max_posts: int | None = None, page_size: int | None = None):
         self.config = config
         self.executable = executable
         self.timeout = timeout
         self.verified = False
+        self.max_posts = max_posts
+        self.page_size = page_size
+        self.strict_dimensions = True
+        if max_posts is not None and not 1 <= max_posts <= 10:
+            raise SyncError("Sample size must be between 1 and 10 posts")
+        if page_size is not None and not 1 <= page_size <= 50:
+            raise SyncError("Page size must be between 1 and 50")
 
     def verify_version(self) -> None:
         version = self.run(self.command("--version"))
@@ -140,7 +152,8 @@ class GalleryDL:
             "extractor.username": None, "extractor.password": None,
             "extractor.cookies-update": False, "extractor.archive": None,
             "extractor.date-after": None, "extractor.date-before": None,
-            "extractor.file-range": None, "extractor.post-range": None,
+            "extractor.file-range": None,
+            "extractor.post-range": f"1-{self.max_posts}" if self.max_posts else None,
             "extractor.file-filter": None, "extractor.post-filter": None,
             "extractor.image-range": None, "extractor.image-filter": None,
             "extractor.whitelist-tags": None, "extractor.tags-whitelist": None,
@@ -153,9 +166,12 @@ class GalleryDL:
             "extractor.twitter.text-tweets": False, "extractor.twitter.transform": True,
             "extractor.twitter.retweets": "original", "extractor.twitter.replies": True,
             "extractor.twitter.ratelimit": "abort", "extractor.twitter.retries-api": 3,
-            "extractor.twitter.size": ["orig", "4096x4096", "large"],
+            "extractor.twitter.size": ["orig"],
+            "extractor.metadata-extractor": None, "extractor.metadata-http": None,
             "output.jsonl": False, "output.private": False,
         }
+        if self.page_size is not None:
+            options['extractor.twitter.limit'] = self.page_size
         for key, value in options.items():
             # Global options override even per-bookmark entries in a private
             # account config; only authentication settings remain user-owned.
@@ -169,18 +185,19 @@ class GalleryDL:
         except (ValueError, TypeError) as exc:
             raise SyncError("Invalid gallery-dl discovery response") from exc
         return Discovery(messages, result.returncode == 0 and not any(
-            isinstance(m, list) and m and m[0] == -1 for m in messages))
+            isinstance(m, list) and m and m[0] == -1 for m in messages), self.max_posts is None)
 
     def download(self, url: str, destination: Path) -> None:
         if not self.verified:
             self.verify_version()
         # The dedicated public-media extractor needs no X account configuration.
         command = self.command("--no-postprocessors", "--no-skip", "--directory", str(destination.parent),
-                               "--filename", destination.name, "--retries", "3", "--timeout", "30")
+                               "--filename", destination.name, "--retries", "3", "--http-timeout", "30")
         for key, value in {
-            "extractor.twitter.size": ["orig", "4096x4096", "large"],
+            "extractor.twitter.size": ["orig"],
             "extractor.netrc": False, "extractor.cookies-from-browser": None,
             "extractor.cookies": None, "extractor.archive": None,
+            "extractor.filesize-max": MAX_IMAGE_BYTES,
         }.items():
             command.extend(["-o", key.rsplit('.', 1)[-1] + "=" + json.dumps(value)])
         result = self.run(command + [media_url(url)])
@@ -195,7 +212,8 @@ class FixtureAdapter:
         self.messages, self.media = messages, media
 
     def discover(self) -> Discovery:
-        return Discovery(json.loads(self.messages.read_text("utf-8")), True)
+        return Discovery(json.loads(self.messages.read_text("utf-8")), True,
+                         getattr(self, 'max_posts', None) is None)
 
     def download(self, url: str, destination: Path) -> None:
         import shutil
@@ -206,7 +224,7 @@ class FixtureAdapter:
 
 def verify_image(path: Path) -> str:
     from PIL import Image
-    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 50 * 1024 ** 2:
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= MAX_IMAGE_BYTES:
         raise SyncError("Missing or oversized image")
     try:
         with Image.open(path) as image:
@@ -216,10 +234,23 @@ def verify_image(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def image_dimensions(path: Path) -> list[int]:
+    from PIL import Image
+    with Image.open(path) as image:
+        return list(image.size)
+
+
 class PipelinePublisher:
+    def __init__(self, r2_prefix: str | None = None, r2_bucket: str | None = None):
+        self.r2_prefix, self.r2_bucket = r2_prefix, r2_bucket
+
     def __call__(self, root: Path, publication_id: str) -> bool:
         command = [sys.executable, str(Path(__file__).with_name("pipeline.py")),
                    "--root", str(root), "--ingest-only", "--publication-id", publication_id]
+        if self.r2_prefix is not None:
+            command.extend(["--r2-prefix", self.r2_prefix])
+        if self.r2_bucket:
+            command.extend(["--r2-bucket", self.r2_bucket])
         try:
             result = subprocess.run(command, capture_output=True, timeout=7200, check=False)
             return result.returncode == 0
@@ -228,9 +259,16 @@ class PipelinePublisher:
 
 
 class BookmarkSync:
-    def __init__(self, root: Path, adapter: Any, publisher: Any = None):
+    def __init__(self, root: Path, adapter: Any, publisher: Any = None,
+                 min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+                 max_download_bytes: int | None = None):
         self.root = root.resolve()
         self.adapter, self.publisher = adapter, publisher
+        self.min_free_bytes, self.max_download_bytes = min_free_bytes, max_download_bytes
+        self.downloaded_bytes = 0
+        self.max_posts = getattr(adapter, 'max_posts', None)
+        self.selected_ids: set[str] = set()
+        self.full_scan = self.max_posts is None
         self.work = self.root / ".x-sync"
         self.work.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_path = self.work / "state.json"
@@ -238,12 +276,17 @@ class BookmarkSync:
                       else {"version": 1, "items": {}, "last_complete_scan": None})
         if self.state.get("version") != 1:
             raise SyncError("Unsupported sync state version")
+        if self.max_posts is not None:
+            self.selected_ids = set(self.state.get('sample_ids', []))
+            if len(self.selected_ids) > self.max_posts:
+                raise SyncError("Existing sample contains more posts than the requested limit")
 
     def save(self) -> None:
         atomic_json(self.state_path, self.state)
 
     def discover(self) -> bool:
         discovery = self.adapter.discover()
+        self.full_scan = discovery.full_scan
         seen_at = now()
         errors = 0
         for message in discovery.messages:
@@ -256,6 +299,12 @@ class BookmarkSync:
                 metadata = message[-1]
                 manifest = manifest_for(metadata, seen_at)
                 source_id = manifest["source_id"]
+                # A sample root may contain old retry items. Never expand a
+                # bounded sample by downloading those outside its selected posts.
+                if (self.max_posts is not None and source_id not in self.selected_ids
+                        and len(self.selected_ids) >= self.max_posts):
+                    continue
+                self.selected_ids.add(source_id)
                 expected = int(metadata["count"])
                 if not 1 <= expected <= 50:
                     raise SyncError("Invalid media count")
@@ -273,13 +322,25 @@ class BookmarkSync:
                     if not 1 <= number <= expected or extension not in ALLOWED_EXT:
                         raise SyncError("Unsupported media record")
                     record = {"url": media_url(message[1]), "file": f"{number}.{extension}"}
-                    item["media"].setdefault(str(number), record)
+                    if metadata.get('width') is not None and metadata.get('height') is not None:
+                        dimensions = [int(metadata['width']), int(metadata['height'])]
+                        if not all(0 < n <= 200000 for n in dimensions):
+                            raise SyncError("Invalid source image dimensions")
+                        record['source_dimensions'] = dimensions
+                    elif getattr(self.adapter, 'strict_dimensions', False):
+                        raise SyncError("Missing original image dimensions")
+                    existing = item["media"].setdefault(str(number), record)
+                    if 'source_dimensions' in record:
+                        existing['source_dimensions'] = record['source_dimensions']
                 item["last_seen"] = seen_at
             except (KeyError, TypeError, ValueError, SyncError):
                 errors += 1
         complete = discovery.complete and errors == 0
-        self.state["scan_complete"] = complete
-        if complete:
+        if self.max_posts is not None:
+            self.state['sample_ids'] = sorted(self.selected_ids)
+        self.state["scan_complete"] = complete and self.full_scan
+        self.state["sample_complete"] = complete and not self.full_scan
+        if complete and self.full_scan:
             self.state["last_complete_scan"] = seen_at
         self.save()
         return complete
@@ -314,6 +375,8 @@ class BookmarkSync:
         blobs, files = [], []
         for number in range(1, item["expected"] + 1):
             record = item["media"][str(number)]
+            if getattr(self.adapter, 'strict_dimensions', False) and not record.get('source_dimensions'):
+                raise SyncError("Original dimensions unavailable; retained for retry")
             if not re.fullmatch(str(number) + r"\.(?:jpg|jpeg|png|gif|webp|avif)", record['file']):
                 raise SyncError('Invalid cached image filename')
             path = cache / record["file"]
@@ -322,11 +385,28 @@ class BookmarkSync:
                 if record.get("sha256") and digest != record["sha256"]:
                     raise SyncError("Cached image changed")
             except SyncError:
+                # Budget the largest accepted file before starting a transfer;
+                # retain room for the cache, queue and archived original copies.
+                if shutil.disk_usage(self.root).free < self.min_free_bytes + 3 * MAX_IMAGE_BYTES:
+                    raise SyncError("Insufficient free space; download retained for retry")
+                if (self.max_download_bytes is not None
+                        and self.downloaded_bytes + MAX_IMAGE_BYTES > self.max_download_bytes):
+                    raise SyncError("Sample download budget exhausted; retained for retry")
                 temporary = path.with_name(path.name + ".download")
                 self.adapter.download(record["url"], temporary)
+                self.downloaded_bytes += temporary.stat().st_size if temporary.is_file() else 0
                 digest = verify_image(temporary)
+                actual = image_dimensions(temporary)
+                if record.get('source_dimensions') and actual != record['source_dimensions']:
+                    raise SyncError("Downloaded image does not match original dimensions")
                 os.replace(temporary, path)
+            actual = image_dimensions(path)
+            if record.get('source_dimensions') and actual != record['source_dimensions']:
+                raise SyncError("Cached image does not match original dimensions")
             record["sha256"] = digest
+            record["actual_dimensions"] = actual
+            record["requested_url"] = record["url"]
+            record["original_dimensions_verified"] = bool(record.get('source_dimensions'))
             blobs.append(path.read_bytes())
             files.append({"file": record["file"], "origin_url": record["url"]})
             self.save()
@@ -356,6 +436,8 @@ class BookmarkSync:
         for source_id, item in self.state["items"].items():
             if item["phase"] in ("archived", "published"):
                 continue
+            if self.max_posts is not None and source_id not in self.selected_ids:
+                continue
             try:
                 self.queue(source_id, item)
             except Exception:
@@ -363,7 +445,17 @@ class BookmarkSync:
                 item["error"] = "Download or queue incomplete; retained for retry"
                 self.save()
         publication_ok = False
-        if self.publisher and any(i["phase"] in ("queued", "archived") for i in self.state["items"].values()):
+        publication_blocked = False
+        if self.publisher and self.max_posts is not None:
+            for manifest_path in (self.root / 'pending').glob('*.json'):
+                try:
+                    manifest = json.loads(manifest_path.read_text('utf-8'))
+                    if manifest.get('source') != 'twitter' or str(manifest.get('source_id')) not in self.selected_ids:
+                        publication_blocked = True
+                except (OSError, ValueError, AttributeError):
+                    publication_blocked = True
+        if (self.publisher and not publication_blocked
+                and any(i["phase"] in ("queued", "archived") for i in self.state["items"].values())):
             publication_id = uuid.uuid4().hex
             pipeline_ok = self.publisher(self.root, publication_id)
             self.reconcile()
@@ -381,8 +473,12 @@ class BookmarkSync:
         self.save()
         counts = {phase: sum(i["phase"] == phase for i in self.state["items"].values())
                   for phase in ("discovered", "downloaded", "queued", "archived", "published")}
-        result = {"created_at": now(), "scan_complete": discovery_ok, "phases": counts,
+        result = {"created_at": now(), "scan_complete": discovery_ok and self.full_scan,
+                  "sample_complete": discovery_ok and not self.full_scan,
+                  "mode": "full" if self.full_scan else "sample",
+                  "downloaded_bytes": self.downloaded_bytes, "phases": counts,
                   "pending_retry": sum(bool(i.get("error")) for i in self.state["items"].values()),
+                  "publication_blocked": publication_blocked,
                   "publication_confirmed": publication_ok}
         atomic_json(self.work / "report.json", result)
         return result
@@ -429,20 +525,47 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gallery-config", type=Path)
     parser.add_argument("--gallery-dl", default="gallery-dl")
     parser.add_argument("--publish", action="store_true", help="Run existing ingestion and R2 publication (live only)")
+    parser.add_argument("--max-posts", type=int, help="Isolated sample of 1-10 whole posts; never a complete account scan")
+    parser.add_argument("--page-size", type=int, help="X page size from 1-50; sample default is 2")
+    parser.add_argument("--max-download-mib", type=int, help="Transfer budget; defaults to 256 MiB for a sample")
+    parser.add_argument("--min-free-gib", type=float, default=5, help="Free disk space to preserve before downloads")
+    parser.add_argument("--r2-prefix", help="Explicit upload prefix; samples require x-smoke/<run>/")
+    parser.add_argument("--r2-bucket", help="Explicit upload bucket override")
     args = parser.parse_args(argv)
+    if args.max_posts is not None:
+        if not 1 <= args.max_posts <= 10:
+            parser.error("--max-posts must be between 1 and 10")
+        if any(protected == args.root.resolve() or protected in args.root.resolve().parents
+               for protected in (Path('/opt/pixiv_collection').resolve(), Path(__file__).parent.resolve())):
+            parser.error("Sample runs require a separate archive root")
+        if args.publish and (not args.r2_prefix or not re.fullmatch(r'x-smoke/[A-Za-z0-9_-]+/?', args.r2_prefix)):
+            parser.error("Sample publication requires explicit --r2-prefix x-smoke/<run>/")
+    if args.max_download_mib is not None and args.max_download_mib < 50:
+        parser.error("--max-download-mib must be at least 50")
+    if args.page_size is not None and not 1 <= args.page_size <= 50:
+        parser.error("--page-size must be between 1 and 50")
+    if not 2 <= args.min_free_gib <= 100:
+        parser.error("--min-free-gib must be between 2 and 100")
     if args.live:
         if args.gallery_config is None:
             parser.error("--live requires --gallery-config; no automatic credential extraction")
-        adapter = GalleryDL(args.gallery_config, args.gallery_dl)
+        adapter = GalleryDL(args.gallery_config, args.gallery_dl, max_posts=args.max_posts,
+                            page_size=args.page_size or (2 if args.max_posts else None))
     else:
         if args.fixture_media is None or args.publish:
             parser.error("Offline mode requires --fixture-media and forbids --publish")
         adapter = FixtureAdapter(args.fixture, args.fixture_media)
+        adapter.max_posts = args.max_posts
+    budget_mib = args.max_download_mib or (256 if args.max_posts else None)
     # The publisher runs under this parent's lock; do not wrap this CLI in flock again.
     with archive_lock(args.root):
-        report = BookmarkSync(args.root, adapter, PipelinePublisher() if args.publish else None).run()
+        report = BookmarkSync(args.root, adapter,
+                              PipelinePublisher(args.r2_prefix, args.r2_bucket) if args.publish else None,
+                              min_free_bytes=int(args.min_free_gib * 1024 ** 3),
+                              max_download_bytes=budget_mib * 1024 ** 2 if budget_mib else None).run()
     print(json.dumps(report, ensure_ascii=False))
-    return int(not report["scan_complete"] or report["pending_retry"] > 0
+    return int(not (report["sample_complete"] if args.max_posts else report["scan_complete"])
+               or report["pending_retry"] > 0
                or (args.publish and any(report["phases"][p] for p in ("queued", "archived"))))
 
 
